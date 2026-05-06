@@ -1,108 +1,122 @@
-
-from flask import Flask, render_template, Response, jsonify, request
+from flask import Flask, render_template, Response, jsonify
 import cv2
 from ultralytics import YOLO
 import logging
 
 app = Flask(__name__)
 
-# Flask ke internal messages ko mute karna taaki terminal clean rahe
+# Flask logs mute karna
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
 
-print("🚀 Loading AeroBrain Autopilot System...")
+print("Loading AeroBrain AI (Target Tracking Enabled)...")
 model = YOLO('yolov8n.pt')
 
-# --- CONFIGURATION ---
-ZONE_LEFT_LIMIT = 213 
+# Screen ko 3 hisson mein baatne ke liye points
+ZONE_LEFT_LIMIT = 213   
 ZONE_RIGHT_LIMIT = 426  
 FRAME_CENTER_X = 320    
-WARNING_AREA = 60000    
-CRITICAL_AREA = 120000  
 
-# Global Variables
+WARNING_AREA = 40000    # Ab khatra jaldi detect hoga
+CRITICAL_AREA = 250000  # Panic sirf tab hoga jab object poori screen gher le
+
 current_yaw = "PATH CLEAR = 0.0°"
-current_pitch = "CRUISE FORWARD ⬆️"
-video_source = 0  # 0 = Camera, 'testing_video.mp4' = Test Video
+current_pitch = "CRUISE FORWARD ⬆"
+current_target_name = "NONE"
 
 def generate_frames():
-    global current_yaw, current_pitch, video_source
-    
+    global current_yaw, current_pitch, current_target_name
+    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW) 
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
     while True:
-        # Har baar loop mein cap ko refresh karenge agar source change hota hai
-        cap = cv2.VideoCapture(video_source)
+        success, frame = cap.read()
+        if not success:
+            break
+
+        # 🌟 MAGIC HAPPENS HERE: model(frame) ki jagah hum model.track() use kar rahe hain
+        # persist=True ka matlab hai AI purane objects ki ID yaad rakhega!
+        results = model.track(frame, persist=True, imgsz=640, conf=0.4, verbose=False)
         
-        while True:
-            success, frame = cap.read()
-            
-            if not success:
-                if video_source != 0: # Agar video hai toh restart karo
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                    continue
-                else:
-                    break
+        primary_threat_box = None
+        largest_area = 0
+        threat_name = "NONE"
 
-            frame = cv2.resize(frame, (640, 480))
-            results = model(frame, imgsz=640, conf=0.4, verbose=False)
-            
-            primary_threat_box = None
-            largest_area = 0
-            threat_name = "NONE"
-
-            for r in results:
-                for box in r.boxes:
-                    x1, y1, x2, y2 = map(int, box.xyxy[0])
-                    area = (x2 - x1) * (y2 - y1)
+        for r in results:
+            boxes = r.boxes
+            for box in boxes:
+                x1, y1, x2, y2 = int(box.xyxy[0][0]), int(box.xyxy[0][1]), int(box.xyxy[0][2]), int(box.xyxy[0][3])
+                area = (x2 - x1) * (y2 - y1)
+                
+                if area > WARNING_AREA and area > largest_area:
+                    largest_area = area
+                    primary_threat_box = box
+                    class_name = model.names[int(box.cls[0])].upper()
                     
-                    if area > WARNING_AREA and area > largest_area:
-                        largest_area = area
-                        primary_threat_box = box
-                        threat_name = model.names[int(box.cls[0])].upper()
-
-            if primary_threat_box:
-                x1, y1, x2, y2 = map(int, primary_threat_box.xyxy[0])
-                center_x = (x1 + x2) // 2
-                
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 3)
-                cv2.putText(frame, f"OBSTACLE: {threat_name}", (x1, y1 - 10), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                
-                degrees_per_pixel = 60 / 640
-                if largest_area > CRITICAL_AREA:
-                    current_pitch = "EMERGENCY REVERSE ⬇️"
-                    current_yaw = "SHARP EVADE LEFT ⬅️ 60.0°" if center_x > FRAME_CENTER_X else "SHARP EVADE RIGHT ➔ 60.0°"
-                else:
-                    current_pitch = "HOLD / SLOW DOWN ="
-                    if center_x > FRAME_CENTER_X:
-                        current_yaw = f"EVADE LEFT ⬅️ {round((FRAME_CENTER_X - (x1 - 40)) * degrees_per_pixel, 1)}°"
+                    # 🌟 NAYA FEATURE: ID nikalna
+                    if box.id is not None:
+                        # Agar ID assign ho gayi hai, toh usko naam ke sath jod do
+                        track_id = int(box.id[0])
+                        threat_name = f"{class_name} #{track_id}"
                     else:
-                        current_yaw = f"EVADE RIGHT ➔ {round(((x2 + 40) - FRAME_CENTER_X) * degrees_per_pixel, 1)}°"
-                
-                # Terminal Log
-                print(f"🚨 AVOIDANCE: [ {threat_name} ] -> {current_yaw} | {current_pitch}")
+                        # Shuruwaati frame mein kabhi-kabhi ID nahi hoti
+                        threat_name = f"{class_name} #?"
+
+        if primary_threat_box:
+            x1, y1, x2, y2 = int(primary_threat_box.xyxy[0][0]), int(primary_threat_box.xyxy[0][1]), int(primary_threat_box.xyxy[0][2]), int(primary_threat_box.xyxy[0][3])
+            center_x = int((x1 + x2) / 2)
+            center_y = int((y1 + y2) / 2)
+            current_target_name = threat_name
+
+            # Box aur uske upar Object ka unique ID print karna
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 3)
+            cv2.putText(frame, f"OBSTACLE: {threat_name}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            cv2.circle(frame, (center_x, center_y), 8, (0, 0, 255), -1)
+
+            # RASTA NIKALNE KA LOGIC
+            degrees_per_pixel = 60 / 640
+
+            if largest_area > CRITICAL_AREA:
+                current_pitch = "EMERGENCY REVERSE ⬇"
+                if center_x > FRAME_CENTER_X:
+                    current_yaw = "SHARP EVADE LEFT  ⬅ 60.0°"
+                else:
+                    current_yaw = "SHARP EVADE RIGHT ➔ 60.0°"
             else:
-                current_yaw = "PATH CLEAR = 0.0°"
-                current_pitch = "CRUISE FORWARD ⬆️"
+                current_pitch = "HOLD / SLOW DOWN ="
+                if center_x > FRAME_CENTER_X:
+                    pixels_to_turn = FRAME_CENTER_X - (x1 - 40)
+                    turn_angle = round(max(0, pixels_to_turn * degrees_per_pixel), 1)
+                    current_yaw = f"EVADE LEFT  ⬅ {turn_angle}°"
+                else:
+                    pixels_to_turn = (x2 + 40) - FRAME_CENTER_X
+                    turn_angle = round(max(0, pixels_to_turn * degrees_per_pixel), 1)
+                    current_yaw = f"EVADE RIGHT ➔ {turn_angle}°"
+            
+            print(f"🚨 AVOIDANCE: [ {threat_name} ] -> {current_yaw} | {current_pitch}")
 
-            # UI Lines
-            cv2.line(frame, (ZONE_LEFT_LIMIT, 0), (ZONE_LEFT_LIMIT, 480), (255, 255, 0), 1)
-            cv2.line(frame, (ZONE_RIGHT_LIMIT, 0), (ZONE_RIGHT_LIMIT, 480), (255, 255, 0), 1)
+        else:
+            current_target_name = "NONE"
+            current_yaw = "PATH CLEAR = 0.0°"
+            current_pitch = "CRUISE FORWARD ⬆"
+            # Terminal logs
+            print("✅ PATH CLEAR -> CRUISE FORWARD") 
 
-            ret, buffer = cv2.imencode('.jpg', frame)
-            yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-        
-        cap.release()
+        cv2.line(frame, (ZONE_LEFT_LIMIT, 0), (ZONE_LEFT_LIMIT, 480), (255, 255, 0), 1)
+        cv2.line(frame, (ZONE_RIGHT_LIMIT, 0), (ZONE_RIGHT_LIMIT, 480), (255, 255, 0), 1)
+        cv2.putText(frame, "LEFT", (50, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 1)
+        cv2.putText(frame, "CENTER", (280, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 1)
+        cv2.putText(frame, "RIGHT", (500, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 1)
+
+        ret, buffer = cv2.imencode('.jpg', frame)
+        frame = buffer.tobytes()
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
 
 @app.route('/')
 def index():
     return render_template('index.html')
-
-@app.route('/set_source/<int:mode>')
-def set_source(mode):
-    global video_source
-    video_source = 'testing_video.mp4' if mode == 1 else 0
-    print(f"🔄 SWITCHING MODE: {'TEST VIDEO' if mode == 1 else 'LIVE CAMERA'}")
-    return jsonify({"status": "success"})
 
 @app.route('/video_feed')
 def video_feed():
@@ -112,12 +126,8 @@ def video_feed():
 def telemetry():
     return jsonify({"yaw": current_yaw, "pitch": current_pitch})
 
-# --- YE HAI URL WALA CORRECT BLOCK ---
 if __name__ == "__main__":
-    print("\n" + "="*50)
-    print("🚁 AEROBRAIN MISSION CONTROL IS STARTING...")
-    print("🌐 DASHBOARD URL: http://127.0.0.1:5000")
-    print("💡 Tip: Press CTRL + Click on the link above")
-    print("="*50 + "\n")
-    
+    print("🚀 Starting AeroBrain with MEMORY & TRACKING...")
+    print("🌐 CLICK HERE TO OPEN DASHBOARD: http://127.0.0.1:5000")
+    print("-" * 50)
     app.run(host='0.0.0.0', port=5000, debug=False)
