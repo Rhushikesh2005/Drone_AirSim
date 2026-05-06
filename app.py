@@ -1,110 +1,108 @@
-from flask import Flask, render_template, Response, jsonify
+
+from flask import Flask, render_template, Response, jsonify, request
 import cv2
 from ultralytics import YOLO
-import logging # <-- Naya add kiya logs band karne ke liye
-import numpy as np
-import torch
-
-# Fix for PyTorch 2.6 weights_only=True default UnpicklingError
-import warnings
-warnings.filterwarnings('ignore', category=FutureWarning)
-torch.serialization.add_safe_globals([
-    "ultralytics.nn.tasks.DetectionModel",
-    "torch.nn.modules.container.Sequential"
-])
-import ultralytics
-# override torch.load to use weights_only=False globally for ultralytics if needed
-__original_load = torch.load
-def load_override(*args, **kwargs):
-    if "weights_only" not in kwargs:
-        kwargs["weights_only"] = False
-    return __original_load(*args, **kwargs)
-torch.load = load_override
+import logging
 
 app = Flask(__name__)
 
-# Flask ke default terminal logs ko chup karana taaki sirf AI commands dikhein
+# Flask ke internal messages ko mute karna taaki terminal clean rahe
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
 
-print("Loading AeroBrain AI Model...")
+print("🚀 Loading AeroBrain Autopilot System...")
 model = YOLO('yolov8n.pt')
 
-FRAME_CENTER_X = 320
-FRAME_CENTER_Y = 240
-DEADZONE = 50
+# --- CONFIGURATION ---
+ZONE_LEFT_LIMIT = 213 
+ZONE_RIGHT_LIMIT = 426  
+FRAME_CENTER_X = 320    
+WARNING_AREA = 60000    
+CRITICAL_AREA = 120000  
 
-# Global variables
-current_yaw = "CENTERED"
-current_pitch = "HOLD"
+# Global Variables
+current_yaw = "PATH CLEAR = 0.0°"
+current_pitch = "CRUISE FORWARD ⬆️"
+video_source = 0  # 0 = Camera, 'testing_video.mp4' = Test Video
 
 def generate_frames():
-    global current_yaw, current_pitch
-    cap = cv2.VideoCapture(0)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-
+    global current_yaw, current_pitch, video_source
+    
     while True:
-        success, frame = cap.read()
-        if success:
+        # Har baar loop mein cap ko refresh karenge agar source change hota hai
+        cap = cv2.VideoCapture(video_source)
+        
+        while True:
+            success, frame = cap.read()
+            
+            if not success:
+                if video_source != 0: # Agar video hai toh restart karo
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    continue
+                else:
+                    break
+
+            frame = cv2.resize(frame, (640, 480))
             results = model(frame, imgsz=640, conf=0.4, verbose=False)
-            person_detected = False
+            
+            primary_threat_box = None
+            largest_area = 0
+            threat_name = "NONE"
 
             for r in results:
-                boxes = r.boxes
-                for box in boxes:
-                    if int(box.cls[0]) == 0: 
-                        person_detected = True
-                        x1, y1, x2, y2 = int(box.xyxy[0][0]), int(box.xyxy[0][1]), int(box.xyxy[0][2]), int(box.xyxy[0][3])
-                        
-                        center_x = int((x1 + x2) / 2)
-                        center_y = int((y1 + y2) / 2)
-                        area = (x2 - x1) * (y2 - y1)
+                for box in r.boxes:
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                    area = (x2 - x1) * (y2 - y1)
+                    
+                    if area > WARNING_AREA and area > largest_area:
+                        largest_area = area
+                        primary_threat_box = box
+                        threat_name = model.names[int(box.cls[0])].upper()
 
-                        # Logic calculations
-                        error_x = center_x - FRAME_CENTER_X
-                        if error_x > DEADZONE:
-                            current_yaw = "YAW RIGHT"
-                        elif error_x < -DEADZONE:
-                            current_yaw = "YAW LEFT"
-                        else:
-                            current_yaw = "CENTERED"
+            if primary_threat_box:
+                x1, y1, x2, y2 = map(int, primary_threat_box.xyxy[0])
+                center_x = (x1 + x2) // 2
+                
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 3)
+                cv2.putText(frame, f"OBSTACLE: {threat_name}", (x1, y1 - 10), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                
+                degrees_per_pixel = 60 / 640
+                if largest_area > CRITICAL_AREA:
+                    current_pitch = "EMERGENCY REVERSE ⬇️"
+                    current_yaw = "SHARP EVADE LEFT ⬅️ 60.0°" if center_x > FRAME_CENTER_X else "SHARP EVADE RIGHT ➔ 60.0°"
+                else:
+                    current_pitch = "HOLD / SLOW DOWN ="
+                    if center_x > FRAME_CENTER_X:
+                        current_yaw = f"EVADE LEFT ⬅️ {round((FRAME_CENTER_X - (x1 - 40)) * degrees_per_pixel, 1)}°"
+                    else:
+                        current_yaw = f"EVADE RIGHT ➔ {round(((x2 + 40) - FRAME_CENTER_X) * degrees_per_pixel, 1)}°"
+                
+                # Terminal Log
+                print(f"🚨 AVOIDANCE: [ {threat_name} ] -> {current_yaw} | {current_pitch}")
+            else:
+                current_yaw = "PATH CLEAR = 0.0°"
+                current_pitch = "CRUISE FORWARD ⬆️"
 
-                        if area < 40000:
-                            current_pitch = "FORWARD"
-                        elif area > 90000:
-                            current_pitch = "BACKWARD"
-                        else:
-                            current_pitch = "HOLD DISTANCE"
+            # UI Lines
+            cv2.line(frame, (ZONE_LEFT_LIMIT, 0), (ZONE_LEFT_LIMIT, 480), (255, 255, 0), 1)
+            cv2.line(frame, (ZONE_RIGHT_LIMIT, 0), (ZONE_RIGHT_LIMIT, 480), (255, 255, 0), 1)
 
-                        # ---> YAHAN TERMINAL MEIN PRINT HOGA <---
-                        print(f"🎯 AI COMMAND -> [ {current_yaw} ]  |  [ MOVE {current_pitch} ]  |  Area: {area}")
+            ret, buffer = cv2.imencode('.jpg', frame)
+            yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+        
+        cap.release()
 
-                        # Drawing UI
-                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                        cv2.circle(frame, (center_x, center_y), 5, (0, 0, 255), -1)
-                        cv2.line(frame, (FRAME_CENTER_X, 0), (FRAME_CENTER_X, 480), (255, 255, 255), 1)
-                        cv2.line(frame, (0, FRAME_CENTER_Y), (640, FRAME_CENTER_Y), (255, 255, 255), 1)
-
-            if not person_detected:
-                current_yaw = "SEARCHING"
-                current_pitch = "SEARCHING"
-        else:
-            person_detected = False
-            current_yaw = "NO CAMERA"
-            current_pitch = "NO CAMERA"
-            frame = np.zeros((480, 640, 3), dtype=np.uint8)
-            cv2.putText(frame, "NO CAMERA", (200, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-
-        ret, buffer = cv2.imencode('.jpg', frame)
-        frame = buffer.tobytes()
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-
-# Routes
 @app.route('/')
 def index():
     return render_template('index.html')
+
+@app.route('/set_source/<int:mode>')
+def set_source(mode):
+    global video_source
+    video_source = 'testing_video.mp4' if mode == 1 else 0
+    print(f"🔄 SWITCHING MODE: {'TEST VIDEO' if mode == 1 else 'LIVE CAMERA'}")
+    return jsonify({"status": "success"})
 
 @app.route('/video_feed')
 def video_feed():
@@ -114,7 +112,12 @@ def video_feed():
 def telemetry():
     return jsonify({"yaw": current_yaw, "pitch": current_pitch})
 
+# --- YE HAI URL WALA CORRECT BLOCK ---
 if __name__ == "__main__":
-    print("Starting AeroBrain Mission Control...")
-    print("🚀 Server started! Open this URL in your web browser: http://127.0.0.1:5000")
+    print("\n" + "="*50)
+    print("🚁 AEROBRAIN MISSION CONTROL IS STARTING...")
+    print("🌐 DASHBOARD URL: http://127.0.0.1:5000")
+    print("💡 Tip: Press CTRL + Click on the link above")
+    print("="*50 + "\n")
+    
     app.run(host='0.0.0.0', port=5000, debug=False)
