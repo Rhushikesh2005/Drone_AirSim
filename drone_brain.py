@@ -1,3 +1,4 @@
+
 import cv2
 import asyncio
 from ultralytics import YOLO
@@ -75,15 +76,15 @@ async def run_vision():
                     if error_x > DEADZONE:
                         yaw_cmd = "YAW RIGHT ➔"
                     elif error_x < -DEADZONE:
-                        yaw_cmd = "YAW LEFT  ⬅"
+                        yaw_cmd = "YAW LEFT  ⬅️"
                     else:
                         yaw_cmd = "CENTERED  ="
 
                     # 2. Forward/Backward (PITCH) Logic
                     if area < 40000:  # Box chhota hai, target door hai
-                        pitch_cmd = "MOVE FORWARD ⬆"
+                        pitch_cmd = "MOVE FORWARD ⬆️"
                     elif area > 90000:  # Box bohot bada hai, target paas hai
-                        pitch_cmd = "MOVE BACKWARD ⬇"
+                        pitch_cmd = "MOVE BACKWARD ⬇️"
                     else:
                         pitch_cmd = "HOLD DISTANCE ="
 
