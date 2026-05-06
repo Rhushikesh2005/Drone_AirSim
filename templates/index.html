@@ -1,47 +1,184 @@
+
 <!DOCTYPE html>
-<html>
+<html lang="en">
+
 <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AeroBrain Mission Control</title>
     <style>
-        body { background-color: #0b0f19; color: #00ffcc; font-family: 'Courier New', Courier, monospace; text-align: center; margin: 0;}
-        h1 { margin-top: 20px; text-shadow: 0 0 10px #00ffcc; }
-        .hud-container { display: inline-block; border: 2px solid #00ffcc; padding: 10px; border-radius: 10px; margin-top: 20px; box-shadow: 0 0 20px rgba(0, 255, 204, 0.2); }
-        img { width: 640px; height: 480px; border: 1px solid #333; }
-        .telemetry-panel { display: flex; justify-content: space-around; margin-top: 20px; width: 640px; margin-left: auto; margin-right: auto; }
-        .box { border: 1px solid #00ffcc; padding: 15px; width: 45%; border-radius: 5px; background: rgba(0, 255, 204, 0.05); }
-        .val { font-size: 24px; font-weight: bold; color: #fff; margin-top: 10px; text-shadow: 0 0 5px #fff; }
+        body {
+            background-color: #0b0f19;
+            color: #00ffcc;
+            font-family: 'Courier New', Courier, monospace;
+            text-align: center;
+            margin: 0;
+            overflow: hidden;
+        }
+
+        header {
+            padding: 20px;
+            background: rgba(0, 255, 204, 0.05);
+            border-bottom: 1px solid #00ffcc;
+        }
+
+        h1 {
+            margin: 0;
+            text-shadow: 0 0 10px #00ffcc;
+            font-size: 24px;
+        }
+
+        .controls {
+            margin: 20px 0;
+        }
+
+        /* Buttons Style */
+        button {
+            background: transparent;
+            color: #00ffcc;
+            border: 2px solid #00ffcc;
+            padding: 10px 20px;
+            margin: 0 10px;
+            font-weight: bold;
+            cursor: pointer;
+            border-radius: 5px;
+            transition: 0.3s;
+        }
+
+        button:hover {
+            background: #00ffcc;
+            color: #0b0f19;
+            box-shadow: 0 0 15px #00ffcc;
+        }
+
+        button.active {
+            background: #00ffcc;
+            color: #0b0f19;
+        }
+
+        .hud-container {
+            display: inline-block;
+            border: 3px solid #00ffcc;
+            border-radius: 10px;
+            position: relative;
+            box-shadow: 0 0 30px rgba(0, 255, 204, 0.2);
+        }
+
+        img {
+            width: 640px;
+            height: 480px;
+            display: block;
+        }
+
+        /* Telemetry Panel */
+        .telemetry-panel {
+            display: flex;
+            justify-content: space-around;
+            margin: 20px auto;
+            width: 650px;
+        }
+
+        .box {
+            border: 1px solid #00ffcc;
+            padding: 15px;
+            width: 45%;
+            background: rgba(0, 255, 204, 0.05);
+            border-radius: 8px;
+        }
+
+        .label {
+            font-size: 12px;
+            margin-bottom: 10px;
+            letter-spacing: 1px;
+        }
+
+        .val {
+            font-size: 22px;
+            font-weight: bold;
+            color: #fff;
+        }
+
+        .status {
+            font-size: 10px;
+            margin-top: 10px;
+            color: #555;
+        }
     </style>
 </head>
+
 <body>
 
-    <h1>🚁 AeroBrain AI Mission Control</h1>
-    
+    <header>
+        <h1>🚁 AEROBRAIN AI MISSION CONTROL</h1>
+    </header>
+
+    <div class="controls">
+        <button id="btn-live" onclick="switchMode(0)" class="active">📸 LIVE CAMERA</button>
+        <button id="btn-test" onclick="switchMode(1)">🚀 TEST VIDEO</button>
+    </div>
+
     <div class="hud-container">
-        <img src="/video_feed" alt="Live Drone Camera">
+        <img id="main-stream" src="/video_feed" alt="Drone Stream">
     </div>
 
     <div class="telemetry-panel">
         <div class="box">
-            <div>YAW (ROTATION)</div>
+            <div class="label">YAW (ROTATION)</div>
             <div class="val" id="yaw-val">WAITING...</div>
         </div>
         <div class="box">
-            <div>PITCH (FORWARD/BACK)</div>
+            <div class="label">PITCH (FORWARD/BACK)</div>
             <div class="val" id="pitch-val">WAITING...</div>
         </div>
     </div>
 
+    <div class="status">AI CORE: YOLOv8n | ENGINE: FLASK | STATUS: ACTIVE</div>
+
     <script>
-        // Har 500ms mein AI commands server se mangwana
-        setInterval(function() {
+        // Function to switch between Camera and Test Video
+        function switchMode(mode) {
+            // UI Button states change karein
+            if (mode === 0) {
+                document.getElementById('btn-live').classList.add('active');
+                document.getElementById('btn-test').classList.remove('active');
+            } else {
+                document.getElementById('btn-test').classList.add('active');
+                document.getElementById('btn-live').classList.remove('active');
+            }
+
+            // Python server ko signal bhejein source change karne ke liye
+            fetch('/set_source/' + mode)
+                .then(response => response.json())
+                .then(data => {
+                    console.log("Source Switched!");
+                    // Stream reload karein
+                    const stream = document.getElementById('main-stream');
+                    stream.src = "/video_feed?t=" + new Date().getTime();
+                });
+        }
+
+        // Telemetry updates (Har 200ms mein)
+        setInterval(function () {
             fetch('/telemetry')
                 .then(response => response.json())
                 .then(data => {
-                    document.getElementById('yaw-val').innerText = data.yaw;
-                    document.getElementById('pitch-val').innerText = data.pitch;
-                });
-        }, 500);
-    </script>
+                    const yawVal = document.getElementById('yaw-val');
+                    const pitchVal = document.getElementById('pitch-val');
 
+                    yawVal.innerText = data.yaw;
+                    pitchVal.innerText = data.pitch;
+
+                    // Emergency alerts (Red color change)
+                    if (data.yaw.includes("SHARP") || data.pitch.includes("EMERGENCY")) {
+                        yawVal.style.color = "#ff4444";
+                        pitchVal.style.color = "#ff4444";
+                    } else {
+                        yawVal.style.color = "#fff";
+                        pitchVal.style.color = "#fff";
+                    }
+                });
+        }, 200);
+    </script>
 </body>
+
 </html>
