@@ -35,7 +35,40 @@ stats = Statistics()
 state_machine = StateMachine() if config.USE_STATE_MACHINE else None
 frame_skip_counter = 0
 
+# Flight mode variables
+current_mode = "AI"  # "AI" or "Manual"
+manual_pitch = 0.0   # Forward/backward velocity
+manual_roll = 0.0    # Left/right velocity
+manual_yaw_rate = 0.0  # Yaw rotation rate
+manual_throttle = 0.0  # Vertical velocity (Z axis)
+
+def process_manual_input(key):
+    """Process keyboard input for manual flight control"""
+    global manual_pitch, manual_roll, manual_yaw_rate, manual_throttle
+    
+    speed_factor = 1.0  # Velocity command magnitude
+    yaw_factor = 15.0   # Yaw rotation rate
+    throttle_factor = 0.5  # Vertical speed
+    
+    if key == ord('w'):  # Pitch forward
+        manual_pitch = speed_factor
+    elif key == ord('s'):  # Pitch backward
+        manual_pitch = -speed_factor
+    elif key == ord('a'):  # Roll left
+        manual_roll = -speed_factor
+    elif key == ord('d'):  # Roll right
+        manual_roll = speed_factor
+    elif key == ord('q'):  # Yaw left
+        manual_yaw_rate = -yaw_factor
+    elif key == ord('e'):  # Yaw right
+        manual_yaw_rate = yaw_factor
+    elif key == ord('r'):  # Altitude up
+        manual_throttle = -throttle_factor  # Negative Z = up in AirSim
+    elif key == ord('f'):  # Altitude down
+        manual_throttle = throttle_factor   # Positive Z = down in AirSim
+
 def main():
+    global current_mode, manual_pitch, manual_roll, manual_yaw_rate, manual_throttle
     client = None
     try:
         logger.info("=" * 60)
@@ -244,14 +277,15 @@ def main():
 
                     command_info = f"🎯 TARGET ({best_class_name}) | {yaw_cmd} | {pitch_cmd} | Area: {area}"
                     
-                    # Send movement commands to drone
-                    try:
-                        # Move forward/backward while rotating to face target
-                        client.moveByVelocityAsync(vx, 0, 0, 1)  # (forward, right, down, duration)
-                        if yaw_rate != 0:
-                            client.rotateByYawRateAsync(yaw_rate, 0.5)
-                    except Exception as e:
-                        logger.warning(f"Failed to send movement command: {e}")
+                    # Send movement commands to drone (only in AI mode)
+                    if current_mode == "AI":
+                        try:
+                            # Move forward/backward while rotating to face target
+                            client.moveByVelocityAsync(vx, 0, 0, 1)  # (forward, right, down, duration)
+                            if yaw_rate != 0:
+                                client.rotateByYawRateAsync(yaw_rate, 0.5)
+                        except Exception as e:
+                            logger.warning(f"Failed to send movement command: {e}")
                     
                     # Draw primary target on frame
                     cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
@@ -259,11 +293,12 @@ def main():
                     cv2.putText(frame, f"{best_class_name} ({area})", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
                 else:
                     command_info = "🔍 SEARCHING FOR OBJECTS"
-                    # Stop moving when searching
-                    try:
-                        client.moveByVelocityAsync(0, 0, 0, 0.1)
-                    except Exception as e:
-                        logger.warning(f"Failed to stop drone: {e}")
+                    # Stop moving when searching (only in AI mode)
+                    if current_mode == "AI":
+                        try:
+                            client.moveByVelocityAsync(0, 0, 0, 0.1)
+                        except Exception as e:
+                            logger.warning(f"Failed to stop drone: {e}")
 
                 # Draw all detected objects on frame
                 for detection in all_detections:
@@ -280,8 +315,18 @@ def main():
                 fps_val = fps_counter.fps
                 state_text = state_machine.state if config.USE_STATE_MACHINE else "ACTIVE"
                 num_detections = len(all_detections)
-                status = f"FPS: {fps_val:.1f} | State: {state_text} | Detections: {num_detections}"
+                mode_text = f"MODE: {current_mode}"
+                status = f"FPS: {fps_val:.1f} | {mode_text} | State: {state_text} | Detections: {num_detections}"
                 cv2.putText(frame, status, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                
+                # Display manual control info if in Manual mode
+                if current_mode == "Manual":
+                    manual_info = f"Controls: W/S=Pitch A/D=Roll Q/E=Yaw R/F=Alt | P:{manual_pitch:.2f} R:{manual_roll:.2f} Y:{manual_yaw_rate:.1f}°/s"
+                    cv2.putText(frame, manual_info, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1)
+                
+                # Display mode toggle hint
+                hint_text = "Press 'M' to toggle mode"
+                cv2.putText(frame, hint_text, (10, config.FRAME_HEIGHT - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
 
                 if config.LOG_DETECTIONS:
                     logger.info(command_info)
@@ -298,10 +343,43 @@ def main():
                 stats.record_frame(num_detections=len(all_detections), inference_time=inference_time)
                 stats.report()
 
-                # Check for exit
-                if cv2.waitKey(1) & 0xFF == ord('q'):
+                # Handle keyboard input
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'):
                     logger.info("Landing and shutting down...")
                     break
+                elif key == ord('m'):
+                    # Toggle between AI and Manual mode
+                    if current_mode == "AI":
+                        current_mode = "Manual"
+                        logger.info("🎮 SWITCHED TO MANUAL MODE")
+                    else:
+                        current_mode = "AI"
+                        manual_pitch = 0.0
+                        manual_roll = 0.0
+                        manual_yaw_rate = 0.0
+                        manual_throttle = 0.0
+                        logger.info("🤖 SWITCHED TO AI MODE")
+                elif current_mode == "Manual" and key != 255:
+                    # Process manual flight inputs
+                    process_manual_input(key)
+                
+                # Send manual control commands if in Manual mode
+                if current_mode == "Manual":
+                    try:
+                        # Apply manual controls
+                        if manual_pitch != 0 or manual_roll != 0 or manual_throttle != 0:
+                            client.moveByVelocityAsync(manual_pitch, manual_roll, manual_throttle, 0.1)
+                        if manual_yaw_rate != 0:
+                            client.rotateByYawRateAsync(manual_yaw_rate, 0.1)
+                        
+                        # Decay controls gradually when no key is pressed
+                        manual_pitch *= 0.9
+                        manual_roll *= 0.9
+                        manual_yaw_rate *= 0.9
+                        manual_throttle *= 0.9
+                    except Exception as e:
+                        logger.warning(f"Failed to send manual control: {e}")
                 
                 # Update FPS
                 fps_counter.tick()
