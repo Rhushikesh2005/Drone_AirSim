@@ -1,43 +1,43 @@
-blinker==1.9.0
-certifi==2026.2.25
-charset-normalizer==3.4.7
-click==8.3.2
-colorama==0.4.6
-contourpy==1.3.3
-cycler==0.12.1
-filelock==3.29.0
-Flask==3.1.3
-fonttools==4.62.1
-fsspec==2026.3.0
-grpcio==1.80.0
-idna==3.11
-itsdangerous==2.2.0
-Jinja2==3.1.6
-kiwisolver==1.5.0
-MarkupSafe==3.0.3
-matplotlib==3.10.8
-mavsdk==3.15.3
-mpmath==1.3.0
-networkx==3.6.1
-numpy==1.26.4
-opencv-python==4.11.0.86
-packaging==26.1
-pillow==12.2.0
-polars==1.40.0
-polars-runtime-32==1.40.0
-protobuf==7.34.1
-psutil==7.2.2
-pyparsing==3.3.2
-python-dateutil==2.9.0.post0
-PyYAML==6.0.3
-requests==2.33.1
-scipy==1.17.1
-six==1.17.0
-sympy==1.14.0
-torch==2.11.0
-torchvision==0.26.0
-typing_extensions==4.15.0
-ultralytics==8.4.40
-ultralytics-thop==2.0.18
-urllib3==2.6.3
-Werkzeug==3.1.8
+# AeroBrain - AI-Powered Autonomous Drone Vision System
+# Essential dependencies for vision-based drone control
+
+# Core Vision & AI
+airsim>=1.8.1                          # AirSim simulator client
+ultralytics>=8.0.0                     # YOLOv8 object detection
+opencv-python>=4.8.0                   # Computer vision library
+numpy>=1.24.0                          # Numerical computing
+
+# Web & API
+Flask>=3.0.0                           # Web dashboard framework
+requests>=2.31.0                       # HTTP library
+Werkzeug>=3.0.0                        # WSGI utilities
+Jinja2>=3.0.0                          # Template engine
+click>=8.0.0                           # CLI utilities
+itsdangerous>=2.0.0                    # Data signing
+
+# Data Processing & Utilities
+pillow>=9.0.0                          # Image processing
+PyYAML>=6.0.0                          # YAML configuration
+python-dateutil>=2.8.0                 # Date utilities
+
+# Optional: Flight control (MAVSDK)
+mavsdk>=3.15.0                         # Alternative autopilot control
+
+# Dependencies (automatically installed)
+certifi>=2023.0.0
+charset-normalizer>=3.0.0
+colorama>=0.4.6
+filelock>=3.10.0
+fonttools>=4.40.0
+fsspec>=2023.1.0
+grpcio>=1.50.0
+idna>=3.4
+kiwisolver>=1.1.0
+MarkupSafe>=2.1.0
+packaging>=23.0
+protobuf>=3.20.0
+psutil>=5.9.0
+pyparsing>=3.0.0
+six>=1.16.0
+typing_extensions>=4.5.0
+urllib3>=1.26.0
