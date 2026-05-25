@@ -10,6 +10,7 @@ import logging
 # Import configuration and utilities
 import config
 from utils import FPSCounter, DetectionSmoother, ObjectTracker, Statistics, setup_logging, StateMachine
+from drone_control import DroneController, track_target_with_velocity
 
 # Setup logging
 logger = setup_logging()
@@ -48,7 +49,7 @@ def process_manual_input(key):
     
     speed_factor = 1.0  # Velocity command magnitude
     yaw_factor = 15.0   # Yaw rotation rate
-    throttle_factor = 0.5  # Vertical speed
+    throttle_factor = config.MANUAL_THROTTLE_FACTOR  # Vertical speed
     
     if key == ord('w'):  # Pitch forward
         manual_pitch = speed_factor
@@ -69,7 +70,7 @@ def process_manual_input(key):
 
 def main():
     global current_mode, manual_pitch, manual_roll, manual_yaw_rate, manual_throttle
-    client = None
+    controller = None
     try:
         logger.info("=" * 60)
         logger.info("🚁 AeroBrain Drone AI System Starting...")
@@ -79,10 +80,16 @@ def main():
         
         # 1. Connect to AirSim
         try:
-            logger.info("Attempting to create MultirotorClient...")
-            client = airsim.MultirotorClient()
-            logger.info("Confirming connection...")
-            client.confirmConnection()
+            logger.info("Attempting to create DroneController...")
+            controller = DroneController(host=config.AIRSIM_HOST, port=config.AIRSIM_PORT)
+            if not controller.connect():
+                logger.error("❌ Cannot connect to AirSim")
+                logger.error("\n⚠️  TROUBLESHOOTING:")
+                logger.error("  1. Make sure AirSim simulator is running")
+                logger.error("  2. Check that the IP address and port are correct")
+                logger.error("  3. Verify firewall settings")
+                logger.error("  4. Try: python -c \"import airsim; print('AirSim module OK')\"")
+                return
             logger.info("[OK] Successfully connected to AirSim")
         except Exception as e:
             logger.error(f"❌ Cannot connect to AirSim: {e}")
@@ -95,53 +102,41 @@ def main():
             return
         
         try:
-            logger.info("Enabling API control...")
-            client.enableApiControl(True)
-            logger.info("Arming motors...")
-            client.armDisarm(True)
+            logger.info("Enabling API control and arming...")
+            if not controller.arm_and_enable():
+                logger.error("❌ Failed to arm drone")
+                return
             logger.info("[OK] Motors armed successfully")
         except Exception as e:
             logger.error(f"❌ Failed to arm drone: {e}")
             logger.error(f"Arming error type: {type(e).__name__}")
             return
 
-        logger.info("--- TAKING OFF ---")
+            logger.info("--- TAKING OFF ---")
         try:
             # Get drone state before takeoff
-            drone_state = client.getMultirotorState()
-            logger.info(f"Drone altitude before takeoff: {drone_state.kinematics_estimated.position.z_val:.2f}m")
+            alt_before = controller.get_altitude()
+            logger.info(f"Drone altitude before takeoff: {alt_before:.2f}m")
             
             logger.info("Executing takeoff command...")
-            takeoff_task = client.takeoffAsync()
-            takeoff_task.join()  # AirSim join() doesn't support 'timeout'
+            if not controller.takeoff(altitude=config.TAKEOFF_ALTITUDE):
+                logger.error("❌ TAKEOFF FAILED")
+                logger.error("\n⚠️  TROUBLESHOOTING:")
+                logger.error("  1. Make sure AirSim simulator is running")
+                logger.error("  2. Ensure the drone is on the ground (not already flying)")
+                logger.error("  3. Check for insufficient clearance above ground")
+                logger.error("  4. Verify motors armed successfully")
+                controller.safe_shutdown()
+                return
             
             # Verify takeoff success
-            time.sleep(2)  # Give it a moment to gain altitude
-            drone_state_after = client.getMultirotorState()
-            alt_after = drone_state_after.kinematics_estimated.position.z_val
+            alt_after = controller.get_altitude()
             logger.info(f"Drone altitude after takeoff: {alt_after:.2f}m")
-            
-            if abs(alt_after) < 1.0: # Altitude is negative Z in AirSim
-                logger.warning("Drone might not have gained enough altitude.")
-            
             logger.info("[OK] Drone took off successfully")
         except Exception as e:
             logger.error(f"❌ TAKEOFF FAILED: {e}")
             logger.error(f"Takeoff exception type: {type(e).__name__}")
-            logger.error("\n⚠️  TROUBLESHOOTING:")
-            logger.error("  1. Make sure AirSim simulator is running")
-            logger.error("  2. Ensure the drone is on the ground (not already flying)")
-            logger.error("  3. Check for insufficient clearance above ground")
-            logger.error("  4. Verify motors armed successfully")
-            
-            # Try to recover
-            try:
-                logger.info("Attempting emergency landing...")
-                client.landAsync().join()
-                client.armDisarm(False)
-                client.enableApiControl(False)
-            except:
-                pass
+            controller.safe_shutdown()
             return
         
         logger.info(">>> Drone is hovering. Initiating AI Vision... <<<")
@@ -160,7 +155,7 @@ def main():
                 
                 # Get image from AirSim
                 inference_start = time.time()
-                responses = client.simGetImages([
+                responses = controller.client.simGetImages([
                     airsim.ImageRequest("0", airsim.ImageType.Scene, False, False)
                 ])
                 
@@ -237,7 +232,8 @@ def main():
                 if person_detected and best_box and config.USE_DETECTION_SMOOTHING:
                     best_box = smoother.smooth(best_box)
 
-                # Update tracker                if config.ENABLE_TRACKING and person_detected and best_box:
+                # Update tracker
+                if config.ENABLE_TRACKING and person_detected and best_box:
                     tracked_objects = tracker.update([best_box])
                 else:
                     tracker.update([])
@@ -250,40 +246,25 @@ def main():
                     center_y = int((y1 + y2) / 2)
                     area = largest_area
 
-                    # YAW (Left/Right) - Rotate to center target horizontally
-                    error_x = center_x - config.FRAME_CENTER_X
-                    yaw_rate = 0  # degrees per second
-                    if error_x > config.YAW_DEADZONE:
-                        yaw_rate = 15  # Rotate right
-                        yaw_cmd = f"YAW RIGHT ➔ {min(config.YAW_MAX_ANGLE, abs(error_x * 60 / config.FRAME_WIDTH)):.1f}°"
-                    elif error_x < -config.YAW_DEADZONE:
-                        yaw_rate = -15  # Rotate left
-                        yaw_cmd = f"YAW LEFT ⬅ {min(config.YAW_MAX_ANGLE, abs(error_x * 60 / config.FRAME_WIDTH)):.1f}°"
-                    else:
-                        yaw_rate = 0
-                        yaw_cmd = "CENTERED ="
-
-                    # PITCH (Forward/Backward) - Move to maintain distance
-                    vx = 0  # Forward/backward velocity
-                    if area < config.DISTANCE_TOO_FAR:
-                        vx = 2.0  # Move forward faster
-                        pitch_cmd = "MOVE FORWARD ⬆⬆"
-                    elif area > config.DISTANCE_TOO_CLOSE:
-                        vx = -1.0  # Move backward
-                        pitch_cmd = "MOVE BACKWARD ⬇"
-                    else:
-                        vx = 0.5  # Slight forward to maintain
-                        pitch_cmd = "HOLD DISTANCE ="
-
-                    command_info = f"🎯 TARGET ({best_class_name}) | {yaw_cmd} | {pitch_cmd} | Area: {area}"
-                    
                     # Send movement commands to drone (only in AI mode)
                     if current_mode == "AI":
                         try:
-                            # Move forward/backward while rotating to face target
-                            client.moveByVelocityAsync(vx, 0, 0, 1)  # (forward, right, down, duration)
-                            if yaw_rate != 0:
-                                client.rotateByYawRateAsync(yaw_rate, 0.5)
+                            # Use helper function for velocity tracking
+                            command_info = track_target_with_velocity(
+                                controller,
+                                target_center_x=center_x,
+                                target_center_y=center_y,
+                                target_area=area,
+                                frame_center_x=config.FRAME_CENTER_X,
+                                frame_center_y=config.FRAME_CENTER_Y,
+                                frame_width=config.FRAME_WIDTH,
+                                frame_height=config.FRAME_HEIGHT,
+                                desired_area=config.DISTANCE_TOO_FAR,
+                                yaw_deadzone=config.YAW_DEADZONE,
+                                distance_too_far=config.DISTANCE_TOO_FAR,
+                                distance_too_close=config.DISTANCE_TOO_CLOSE
+                            )
+                            command_info = f"🎯 TARGET ({best_class_name}) | {command_info}"
                         except Exception as e:
                             logger.warning(f"Failed to send movement command: {e}")
                     
@@ -296,7 +277,7 @@ def main():
                     # Stop moving when searching (only in AI mode)
                     if current_mode == "AI":
                         try:
-                            client.moveByVelocityAsync(0, 0, 0, 0.1)
+                            controller.hover(duration=0.1)
                         except Exception as e:
                             logger.warning(f"Failed to stop drone: {e}")
 
@@ -367,11 +348,15 @@ def main():
                 # Send manual control commands if in Manual mode
                 if current_mode == "Manual":
                     try:
-                        # Apply manual controls
-                        if manual_pitch != 0 or manual_roll != 0 or manual_throttle != 0:
-                            client.moveByVelocityAsync(manual_pitch, manual_roll, manual_throttle, 0.1)
-                        if manual_yaw_rate != 0:
-                            client.rotateByYawRateAsync(manual_yaw_rate, 0.1)
+                        # Apply manual controls in body frame
+                        if manual_pitch != 0 or manual_roll != 0 or manual_throttle != 0 or manual_yaw_rate != 0:
+                            controller.move_by_velocity_body_frame(
+                                forward=manual_pitch,
+                                right=manual_roll,
+                                down=manual_throttle,
+                                yaw_rate=manual_yaw_rate,
+                                duration=0.1
+                            )
                         
                         # Decay controls gradually when no key is pressed
                         manual_pitch *= 0.9
@@ -399,12 +384,8 @@ def main():
     finally:
         # Graceful shutdown
         try:
-            if client is not None:
-                logger.info("Landing drone...")
-                client.landAsync().join()
-                time.sleep(2)
-                client.armDisarm(False)
-                client.enableApiControl(False)
+            if controller is not None:
+                controller.safe_shutdown()
                 logger.info("✅ Drone safely landed and disarmed")
         except Exception as e:
             logger.warning(f"Shutdown warning: {e}")

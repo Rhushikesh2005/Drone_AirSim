@@ -33,6 +33,10 @@ FRAME_CENTER_Y = int(FRAME_HEIGHT / 2)
 YAW_DEADZONE = 50
 PITCH_DEADZONE = 30
 
+# Takeoff and manual control defaults
+TAKEOFF_ALTITUDE = 15.0           # Default takeoff altitude (meters)
+MANUAL_THROTTLE_FACTOR = 1.0      # Manual altitude control responsiveness
+
 # Distance thresholds (area in pixels²)
 DISTANCE_TOO_FAR = 40000          # Drone moves forward
 DISTANCE_PERFECT = (40000, 90000) # Drone holds distance
