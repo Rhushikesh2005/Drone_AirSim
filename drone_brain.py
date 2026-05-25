@@ -28,6 +28,14 @@ except Exception as e:
     logger.error(f"FATAL: Failed to load YOLO model: {e}")
     sys.exit(1)
 
+# Validate configuration
+logger.info("Validating configuration...")
+if config.TAKEOFF_ALTITUDE < 2.0:
+    logger.error(f"❌ INVALID CONFIG: TAKEOFF_ALTITUDE ({config.TAKEOFF_ALTITUDE}m) must be at least 2.0m for safe flight")
+    logger.error("⚠️  Update TAKEOFF_ALTITUDE in config.py to >= 2.0")
+    sys.exit(1)
+logger.info(f"[OK] Takeoff altitude validated: {config.TAKEOFF_ALTITUDE}m")
+
 # Initialize utilities
 fps_counter = FPSCounter()
 smoother = DetectionSmoother(factor=config.SMOOTHING_FACTOR)
@@ -42,6 +50,11 @@ manual_pitch = 0.0   # Forward/backward velocity
 manual_roll = 0.0    # Left/right velocity
 manual_yaw_rate = 0.0  # Yaw rotation rate
 manual_throttle = 0.0  # Vertical velocity (Z axis)
+
+# Patrol Mode variables
+patrol_state = "ROTATING"  # "ROTATING" or "MOVING_FORWARD"
+patrol_start_time = time.time()
+last_patrol_forward_start = 0.0
 
 def process_manual_input(key):
     """Process keyboard input for manual flight control"""
@@ -70,6 +83,7 @@ def process_manual_input(key):
 
 def main():
     global current_mode, manual_pitch, manual_roll, manual_yaw_rate, manual_throttle
+    global patrol_state, patrol_start_time, last_patrol_forward_start
     controller = None
     try:
         logger.info("=" * 60)
@@ -241,6 +255,10 @@ def main():
                 # Generate drone commands and send movement to drone
                 command_info = ""
                 if person_detected and best_box:
+                    # Reset patrol variables when target is found
+                    patrol_state = "ROTATING"
+                    patrol_start_time = time.time()
+                    
                     x1, y1, x2, y2 = best_box
                     center_x = int((x1 + x2) / 2)
                     center_y = int((y1 + y2) / 2)
@@ -274,12 +292,30 @@ def main():
                     cv2.putText(frame, f"{best_class_name} ({area})", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
                 else:
                     command_info = "🔍 SEARCHING FOR OBJECTS"
-                    # Stop moving when searching (only in AI mode)
+                    # Patrol logic (only in AI mode)
                     if current_mode == "AI":
+                        current_time = time.time()
                         try:
-                            controller.hover(duration=0.1)
+                            if patrol_state == "ROTATING":
+                                # 360 rotation at 30 deg/s = 12 seconds
+                                if current_time - patrol_start_time >= 12.0:
+                                    patrol_state = "MOVING_FORWARD"
+                                    last_patrol_forward_start = current_time
+                                    logger.info(">>> Patrol: Rotation complete. Moving forward... <<<")
+                                else:
+                                    controller.move_by_velocity_body_frame(forward=0, right=0, down=0, yaw_rate=30, duration=0.1)
+                                    command_info = f"🔄 PATROL: ROTATING ({int((current_time - patrol_start_time)/12.0*100)}%)"
+                            
+                            elif patrol_state == "MOVING_FORWARD":
+                                if current_time - last_patrol_forward_start >= 3.0:
+                                    patrol_state = "ROTATING"
+                                    patrol_start_time = current_time
+                                    logger.info(">>> Patrol: Forward move complete. Rotating... <<<")
+                                else:
+                                    controller.move_by_velocity_body_frame(forward=2.0, right=0, down=0, yaw_rate=0, duration=0.1)
+                                    command_info = f"🚀 PATROL: MOVING FORWARD ({int(3.0 - (current_time - last_patrol_forward_start))}s)"
                         except Exception as e:
-                            logger.warning(f"Failed to stop drone: {e}")
+                            logger.warning(f"Patrol command failed: {e}")
 
                 # Draw all detected objects on frame
                 for detection in all_detections:
@@ -297,7 +333,13 @@ def main():
                 state_text = state_machine.state if config.USE_STATE_MACHINE else "ACTIVE"
                 num_detections = len(all_detections)
                 mode_text = f"MODE: {current_mode}"
-                status = f"FPS: {fps_val:.1f} | {mode_text} | State: {state_text} | Detections: {num_detections}"
+                # Read altitude from controller (meters, positive = up)
+                try:
+                    altitude = controller.get_altitude()
+                    altitude_text = f"{altitude:.1f}m" if altitude is not None else "N/A"
+                except Exception:
+                    altitude_text = "ERR"
+                status = f"FPS: {fps_val:.1f} | {mode_text} | State: {state_text} | Detections: {num_detections} | Alt: {altitude_text}"
                 cv2.putText(frame, status, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
                 
                 # Display manual control info if in Manual mode

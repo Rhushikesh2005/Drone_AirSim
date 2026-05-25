@@ -34,7 +34,7 @@ YAW_DEADZONE = 50
 PITCH_DEADZONE = 30
 
 # Takeoff and manual control defaults
-TAKEOFF_ALTITUDE = 15.0           # Default takeoff altitude (meters)
+TAKEOFF_ALTITUDE = 7.0            # Default takeoff altitude (meters)
 MANUAL_THROTTLE_FACTOR = 1.0      # Manual altitude control responsiveness
 
 # Distance thresholds (area in pixels²)
@@ -96,12 +96,12 @@ SMOOTHING_FACTOR = 0.3             # 0.0-1.0 (higher = smoother but slower)
 
 # Tracking features
 ENABLE_TRACKING = True             # Track objects across frames
-MAX_TRACKED_OBJECTS = 5            # Max objects to track simultaneously
+MAX_TRACKED_OBJECTS = 10            # Max objects to track simultaneously
 
 # ============================================================================
 # SAFETY SETTINGS
 # ============================================================================
-MAX_FLIGHT_TIME = 600              # Max flight time (seconds)
-MIN_BATTERY_PERCENT = 20           # Min battery before landing
+MAX_FLIGHT_TIME = 5000              # Max flight time (seconds)
+MIN_BATTERY_PERCENT = 10           # Min battery before landing
 EMERGENCY_LANDING_ALTITUDE = 0.5   # Land if below this altitude (meters)
 GEOFENCE_RADIUS = 500              # Max distance from origin (meters)

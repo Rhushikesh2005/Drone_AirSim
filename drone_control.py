@@ -81,6 +81,11 @@ class DroneController:
             
             logger.info(f"Taking off to {altitude}m...")
             self.client.takeoffAsync().join()
+            
+            # Climb straight up to target altitude (NED: Z is negative for up)
+            logger.info(f"Climbing to {altitude}m at 3m/s...")
+            self.client.moveToZAsync(-float(altitude), 3).join()
+            
             time.sleep(1)
             self.is_flying = True
             logger.info("[OK] Takeoff complete")
