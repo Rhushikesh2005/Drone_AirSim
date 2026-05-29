@@ -11,6 +11,7 @@ Provides high-level functions for common drone operations:
 import airsim
 import time
 import logging
+import config
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +171,26 @@ class DroneController:
             logger.warning(f"Body frame velocity command failed: {e}")
             return False
     
+    def move_by_velocity_z_body_frame(self, forward: float, right: float, z: float,
+                                     yaw_rate: float = 0.0, duration: float = 0.1) -> bool:
+        """
+        Move drone by velocity maintaining a constant altitude (z).
+        
+        Args:
+            forward: Forward velocity (m/s)
+            right: Right velocity (m/s)
+            z: Absolute target Z (m, NED: negative is up)
+            yaw_rate: Yaw rotation rate (deg/s)
+            duration: Duration of command (seconds)
+        """
+        try:
+            yaw_mode = airsim.YawMode(is_rate=True, yaw_or_rate=yaw_rate)
+            self.client.moveByVelocityZBodyFrameAsync(forward, right, z, duration, yaw_mode=yaw_mode)
+            return True
+        except Exception as e:
+            logger.warning(f"Z Body frame velocity command failed: {e}")
+            return False
+    
     def move_to_position(self, x: float, y: float, z: float, velocity: float = 1.0) -> bool:
         """
         Move to absolute position (blocking).
@@ -277,12 +298,13 @@ def track_target_with_velocity(controller: DroneController,
                                target_center_x: int, target_center_y: int, target_area: int,
                                frame_center_x: int, frame_center_y: int,
                                frame_width: int, frame_height: int,
-                               desired_area: int, yaw_deadzone: int = 50,
+                               desired_area: int, target_z: float, yaw_deadzone: int = 50,
                                distance_too_far: int = 5000, distance_too_close: int = 20000) -> str:
     """
     Generate and send velocity commands to track a target in frame.
     
     Uses body frame for intuitive control: forward/back for distance, yaw for centering.
+    Altitude is maintained via moveByVelocityZBodyFrame.
     
     Args:
         controller: DroneController instance
@@ -291,6 +313,7 @@ def track_target_with_velocity(controller: DroneController,
         frame_center_x, frame_center_y: Center of frame
         frame_width, frame_height: Frame dimensions
         desired_area: Ideal area to maintain (for distance)
+        target_z: Absolute target Z (m, NED: negative is up)
         yaw_deadzone: Pixels from center before yaw corrects
         distance_too_far: Area threshold for "too far"
         distance_too_close: Area threshold for "too close"
@@ -305,34 +328,34 @@ def track_target_with_velocity(controller: DroneController,
     yaw_cmd = ""
     
     if error_x > yaw_deadzone:
-        yaw_rate = 15.0  # Rotate right
+        yaw_rate = config.YAW_MAX_SPEED  # Rotate right
         yaw_cmd = f"YAW RIGHT ➔"
     elif error_x < -yaw_deadzone:
-        yaw_rate = -15.0  # Rotate left
+        yaw_rate = -config.YAW_MAX_SPEED  # Rotate left
         yaw_cmd = f"YAW LEFT ⬅"
     else:
         yaw_rate = 0.0
         yaw_cmd = "CENTERED ="
     
     # PITCH CONTROL: Move forward/back to maintain distance
-    forward_velocity = 0.5  # Slight forward to maintain position
+    forward_velocity = config.FORWARD_MAX_SPEED * 0.2  # Slow creep by default
     pitch_cmd = ""
     
     if target_area < distance_too_far:
-        forward_velocity = 2.0  # Move forward faster
+        forward_velocity = config.FORWARD_MAX_SPEED  # Move forward fast
         pitch_cmd = "MOVE FORWARD ⬆⬆"
     elif target_area > distance_too_close:
-        forward_velocity = -1.0  # Move backward
+        forward_velocity = -(config.FORWARD_MAX_SPEED * 0.5)  # Move backward
         pitch_cmd = "MOVE BACKWARD ⬇"
     else:
-        forward_velocity = 0.5
+        forward_velocity = config.FORWARD_MAX_SPEED * 0.1
         pitch_cmd = "HOLD DISTANCE ="
-    
-    # Send command in body frame (forward/right/down relative to drone)
-    controller.move_by_velocity_body_frame(
+        
+    # Send command in body frame (forward/right relative to drone) with constant Z
+    controller.move_by_velocity_z_body_frame(
         forward=forward_velocity,
         right=0.0,
-        down=0.0,
+        z=target_z,
         yaw_rate=yaw_rate,
         duration=0.1  # Short duration; will be re-issued each loop
     )

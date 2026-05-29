@@ -25,6 +25,7 @@ FRAME_WIDTH = 640
 FRAME_HEIGHT = 480
 FRAME_CENTER_X = int(FRAME_WIDTH / 2)
 FRAME_CENTER_Y = int(FRAME_HEIGHT / 2)
+CLEAR_CAMERA_OVERLAYS = False      # Toggle HUD and detection overlays
 
 # ============================================================================
 # DRONE CONTROL SETTINGS
@@ -43,8 +44,10 @@ DISTANCE_PERFECT = (40000, 90000) # Drone holds distance
 DISTANCE_TOO_CLOSE = 90000        # Drone moves backward
 
 # Movement intensity
-YAW_MAX_ANGLE = 60.0               # Max yaw angle (degrees)
-PITCH_MAX_SPEED = 0.5              # Max pitch movement speed
+YAW_MAX_SPEED = 30.0               # Degrees per second
+FORWARD_MAX_SPEED = 5.0            # Meters per second (Manual & AI)
+ALTITUDE_STEP_SPEED = 1.5          # Speed of altitude adjustment
+MANUAL_CONTROL_SMOOTHING = 0.85    # Damping factor (0.0=instant stop, 1.0=no decay)
 
 # ============================================================================
 # PERFORMANCE OPTIMIZATION

@@ -45,24 +45,20 @@ state_machine = StateMachine() if config.USE_STATE_MACHINE else None
 frame_skip_counter = 0
 
 # Flight mode variables
-current_mode = "AI"  # "AI" or "Manual"
-manual_pitch = 0.0   # Forward/backward velocity
-manual_roll = 0.0    # Left/right velocity
-manual_yaw_rate = 0.0  # Yaw rotation rate
-manual_throttle = 0.0  # Vertical velocity (Z axis)
-
-# Patrol Mode variables
-patrol_state = "ROTATING"  # "ROTATING" or "MOVING_FORWARD"
-patrol_start_time = time.time()
-last_patrol_forward_start = 0.0
+current_mode = "Manual"  # Start in Manual mode
+manual_pitch = 0.0      # Forward/backward velocity
+manual_roll = 0.0       # Left/right velocity
+manual_yaw_rate = 0.0   # Yaw rotation rate
+target_altitude = -config.TAKEOFF_ALTITUDE  # Absolute altitude target (NED)
 
 def process_manual_input(key):
     """Process keyboard input for manual flight control"""
-    global manual_pitch, manual_roll, manual_yaw_rate, manual_throttle
+    global manual_pitch, manual_roll, manual_yaw_rate, target_altitude
     
-    speed_factor = 1.0  # Velocity command magnitude
-    yaw_factor = 15.0   # Yaw rotation rate
-    throttle_factor = config.MANUAL_THROTTLE_FACTOR  # Vertical speed
+    # Use config-based speeds for manual control
+    speed_factor = config.FORWARD_MAX_SPEED
+    yaw_factor = config.YAW_MAX_SPEED
+    alt_step = config.ALTITUDE_STEP_SPEED
     
     if key == ord('w'):  # Pitch forward
         manual_pitch = speed_factor
@@ -77,9 +73,11 @@ def process_manual_input(key):
     elif key == ord('e'):  # Yaw right
         manual_yaw_rate = yaw_factor
     elif key == ord('r'):  # Altitude up
-        manual_throttle = -throttle_factor  # Negative Z = up in AirSim
+        target_altitude -= alt_step  # Negative Z = up in AirSim
+        logger.info(f"Target Altitude increased to: {-target_altitude}m")
     elif key == ord('f'):  # Altitude down
-        manual_throttle = throttle_factor   # Positive Z = down in AirSim
+        target_altitude += alt_step  # Positive Z = down in AirSim
+        logger.info(f"Target Altitude decreased to: {-target_altitude}m")
 
 def main():
     global current_mode, manual_pitch, manual_roll, manual_yaw_rate, manual_throttle
@@ -184,63 +182,71 @@ def main():
                 frame = img1d.reshape(response.height, response.width, 3)
                 frame = cv2.resize(frame, (config.FRAME_WIDTH, config.FRAME_HEIGHT))
 
-                # Run YOLO inference
-                try:
-                    results = model(frame, conf=config.YOLO_CONFIDENCE, imgsz=config.YOLO_IMGSZ, verbose=False)
-                    inference_time = time.time() - inference_start
-                except Exception as e:
-                    logger.warning(f"YOLO inference failed: {e}")
-                    loop_count += 1
-                    continue
-        
+                # Process Vision Logic (Only in AI mode to boost performance)
                 person_detected = False
                 best_box = None
                 best_class_name = None
                 largest_area = 0
                 all_detections = []  # Store all detections for display
+                inference_time = 0.0
 
-                # Process detections - DETECT ALL CLASSES
-                for r in results:
-                    boxes = r.boxes
-                    for box in boxes:
-                        try:
-                            class_id = int(box.cls[0])
-                            class_name = model.names[class_id]
-                            confidence = float(box.conf[0])
-                            x1, y1, x2, y2 = int(box.xyxy[0][0]), int(box.xyxy[0][1]), int(box.xyxy[0][2]), int(box.xyxy[0][3])
-                            area = (x2 - x1) * (y2 - y1)
-                            
-                            # Log all detections
-                            logger.info(f"Detected: {class_name} (ID: {class_id}, Conf: {confidence:.2f}, Area: {area})")
-                            
-                            # Store detection info
-                            all_detections.append({
-                                'class_id': class_id,
-                                'class_name': class_name,
-                                'confidence': confidence,
-                                'box': [x1, y1, x2, y2],
-                                'area': area
-                            })
-                            
-                            # Track the largest detected object for drone control
-                            if area > largest_area:
-                                largest_area = area
-                                best_box = [x1, y1, x2, y2]
-                                best_class_name = class_name
-                                person_detected = True
-                        except Exception as e:
-                            logger.warning(f"Box processing error: {e}")
-                            continue
+                if current_mode == "AI":
+                    # Run YOLO inference
+                    try:
+                        results = model(frame, conf=config.YOLO_CONFIDENCE, imgsz=config.YOLO_IMGSZ, verbose=False)
+                        inference_time = time.time() - inference_start
+                    except Exception as e:
+                        logger.warning(f"YOLO inference failed: {e}")
+                        loop_count += 1
+                        continue
+
+                    # Process detections - DETECT ALL CLASSES
+                    for r in results:
+                        boxes = r.boxes
+                        for box in boxes:
+                            try:
+                                class_id = int(box.cls[0])
+                                class_name = model.names[class_id]
+                                confidence = float(box.conf[0])
+                                x1, y1, x2, y2 = int(box.xyxy[0][0]), int(box.xyxy[0][1]), int(box.xyxy[0][2]), int(box.xyxy[0][3])
+                                area = (x2 - x1) * (y2 - y1)
+                                
+                                # Log all detections
+                                logger.info(f"Detected: {class_name} (ID: {class_id}, Conf: {confidence:.2f}, Area: {area})")
+                                
+                                # Store detection info
+                                all_detections.append({
+                                    'class_id': class_id,
+                                    'class_name': class_name,
+                                    'confidence': confidence,
+                                    'box': [x1, y1, x2, y2],
+                                    'area': area
+                                })
+                                
+                                # Track the largest detected object for drone control
+                                if area > largest_area:
+                                    largest_area = area
+                                    best_box = [x1, y1, x2, y2]
+                                    best_class_name = class_name
+                                    person_detected = True
+                            except Exception as e:
+                                logger.warning(f"Box processing error: {e}")
+                                continue
 
                 # Update state machine
                 if config.USE_STATE_MACHINE:
                     if person_detected:
-                        state_machine.set_state(StateMachine.TRACKING)
+                        # Enter tracking state when person seen
+                        if state_machine.set_state(StateMachine.TRACKING):
+                            logger.info("State -> TRACKING")
                     else:
-                        if state_machine.get_time_in_state() > config.AUTO_LAND_ON_LOSS:
-                            state_machine.set_state(StateMachine.LANDING)
+                        # Only auto-land when enabled and the configured timeout has elapsed
+                        if config.AUTO_LAND_ON_LOSS and state_machine.get_time_in_state() > config.TARGET_LOSS_TIMEOUT:
+                            if state_machine.set_state(StateMachine.LANDING):
+                                logger.info("State -> LANDING (auto-land triggered)")
                         else:
-                            state_machine.set_state(StateMachine.SEARCHING)
+                            if state_machine.set_state(StateMachine.SEARCHING):
+                                logger.info("State -> SEARCHING")
 
                 # Apply smoothing
                 if person_detected and best_box and config.USE_DETECTION_SMOOTHING:
@@ -278,6 +284,7 @@ def main():
                                 frame_width=config.FRAME_WIDTH,
                                 frame_height=config.FRAME_HEIGHT,
                                 desired_area=config.DISTANCE_TOO_FAR,
+                                target_z=target_altitude,
                                 yaw_deadzone=config.YAW_DEADZONE,
                                 distance_too_far=config.DISTANCE_TOO_FAR,
                                 distance_too_close=config.DISTANCE_TOO_CLOSE
@@ -287,69 +294,62 @@ def main():
                             logger.warning(f"Failed to send movement command: {e}")
                     
                     # Draw primary target on frame
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                    cv2.circle(frame, (center_x, center_y), 5, (0, 0, 255), -1)
-                    cv2.putText(frame, f"{best_class_name} ({area})", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                    if not config.CLEAR_CAMERA_OVERLAYS:
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                        cv2.circle(frame, (center_x, center_y), 5, (0, 0, 255), -1)
+                        cv2.putText(frame, f"{best_class_name} ({area})", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
                 else:
                     command_info = "🔍 SEARCHING FOR OBJECTS"
-                    # Patrol logic (only in AI mode)
+                    # Continuous forward search (simple straight-line patrol)
                     if current_mode == "AI":
-                        current_time = time.time()
                         try:
-                            if patrol_state == "ROTATING":
-                                # 360 rotation at 30 deg/s = 12 seconds
-                                if current_time - patrol_start_time >= 12.0:
-                                    patrol_state = "MOVING_FORWARD"
-                                    last_patrol_forward_start = current_time
-                                    logger.info(">>> Patrol: Rotation complete. Moving forward... <<<")
-                                else:
-                                    controller.move_by_velocity_body_frame(forward=0, right=0, down=0, yaw_rate=30, duration=0.1)
-                                    command_info = f"🔄 PATROL: ROTATING ({int((current_time - patrol_start_time)/12.0*100)}%)"
-                            
-                            elif patrol_state == "MOVING_FORWARD":
-                                if current_time - last_patrol_forward_start >= 3.0:
-                                    patrol_state = "ROTATING"
-                                    patrol_start_time = current_time
-                                    logger.info(">>> Patrol: Forward move complete. Rotating... <<<")
-                                else:
-                                    controller.move_by_velocity_body_frame(forward=2.0, right=0, down=0, yaw_rate=0, duration=0.1)
-                                    command_info = f"🚀 PATROL: MOVING FORWARD ({int(3.0 - (current_time - last_patrol_forward_start))}s)"
+                            # Move forward with altitude lock using config-based speed
+                            controller.move_by_velocity_z_body_frame(
+                                forward=config.FORWARD_MAX_SPEED, 
+                                right=0, 
+                                z=target_altitude, 
+                                yaw_rate=0, 
+                                duration=0.1
+                            )
+                            command_info = "🚀 PATROL: MOVING FORWARD (continuous)"
                         except Exception as e:
-                            logger.warning(f"Patrol command failed: {e}")
+                            logger.warning(f"Patrol forward failed: {e}")
 
-                # Draw all detected objects on frame
-                for detection in all_detections:
-                    if detection['box'] != best_box:  # Don't redraw the main target
-                        x1, y1, x2, y2 = detection['box']
-                        cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 1)  # Blue for non-primary detections
-                        cv2.putText(frame, f"{detection['class_name']}", (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1)
+                # Draw all detected objects and UI elements if overlays are enabled
+                if not config.CLEAR_CAMERA_OVERLAYS:
+                    # Draw detections
+                    for detection in all_detections:
+                        if detection['box'] != best_box:  # Don't redraw the main target
+                            x1, y1, x2, y2 = detection['box']
+                            cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 1)  # Blue for non-primary detections
+                            cv2.putText(frame, f"{detection['class_name']}", (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1)
 
-                # Draw UI elements
-                cv2.line(frame, (config.FRAME_CENTER_X, 0), (config.FRAME_CENTER_X, config.FRAME_HEIGHT), (255, 255, 255), 1)
-                cv2.line(frame, (0, config.FRAME_CENTER_Y), (config.FRAME_WIDTH, config.FRAME_CENTER_Y), (255, 255, 255), 1)
-                
-                # Add status text
-                fps_val = fps_counter.fps
-                state_text = state_machine.state if config.USE_STATE_MACHINE else "ACTIVE"
-                num_detections = len(all_detections)
-                mode_text = f"MODE: {current_mode}"
-                # Read altitude from controller (meters, positive = up)
-                try:
-                    altitude = controller.get_altitude()
-                    altitude_text = f"{altitude:.1f}m" if altitude is not None else "N/A"
-                except Exception:
-                    altitude_text = "ERR"
-                status = f"FPS: {fps_val:.1f} | {mode_text} | State: {state_text} | Detections: {num_detections} | Alt: {altitude_text}"
-                cv2.putText(frame, status, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-                
-                # Display manual control info if in Manual mode
-                if current_mode == "Manual":
-                    manual_info = f"Controls: W/S=Pitch A/D=Roll Q/E=Yaw R/F=Alt | P:{manual_pitch:.2f} R:{manual_roll:.2f} Y:{manual_yaw_rate:.1f}°/s"
-                    cv2.putText(frame, manual_info, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1)
-                
-                # Display mode toggle hint
-                hint_text = "Press 'M' to toggle mode"
-                cv2.putText(frame, hint_text, (10, config.FRAME_HEIGHT - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
+                    # Draw UI elements
+                    cv2.line(frame, (config.FRAME_CENTER_X, 0), (config.FRAME_CENTER_X, config.FRAME_HEIGHT), (255, 255, 255), 1)
+                    cv2.line(frame, (0, config.FRAME_CENTER_Y), (config.FRAME_WIDTH, config.FRAME_CENTER_Y), (255, 255, 255), 1)
+                    
+                    # Add status text
+                    fps_val = fps_counter.fps
+                    state_text = state_machine.state if config.USE_STATE_MACHINE else "ACTIVE"
+                    num_detections = len(all_detections)
+                    mode_text = f"MODE: {current_mode}"
+                    # Read altitude from controller (meters, positive = up)
+                    try:
+                        altitude = controller.get_altitude()
+                        altitude_text = f"{altitude:.1f}m" if altitude is not None else "N/A"
+                    except Exception:
+                        altitude_text = "ERR"
+                    status = f"FPS: {fps_val:.1f} | {mode_text} | State: {state_text} | Detections: {num_detections} | Alt: {altitude_text}"
+                    cv2.putText(frame, status, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                    
+                    # Display manual control info if in Manual mode
+                    if current_mode == "Manual":
+                        manual_info = f"Controls: W/S=Pitch A/D=Roll Q/E=Yaw R/F=Alt | P:{manual_pitch:.2f} R:{manual_roll:.2f} Y:{manual_yaw_rate:.1f}°/s"
+                        cv2.putText(frame, manual_info, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1)
+                    
+                    # Display mode toggle hint
+                    hint_text = "Press 'M' to toggle mode"
+                    cv2.putText(frame, hint_text, (10, config.FRAME_HEIGHT - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
 
                 if config.LOG_DETECTIONS:
                     logger.info(command_info)
@@ -390,21 +390,26 @@ def main():
                 # Send manual control commands if in Manual mode
                 if current_mode == "Manual":
                     try:
-                        # Apply manual controls in body frame
-                        if manual_pitch != 0 or manual_roll != 0 or manual_throttle != 0 or manual_yaw_rate != 0:
-                            controller.move_by_velocity_body_frame(
-                                forward=manual_pitch,
-                                right=manual_roll,
-                                down=manual_throttle,
-                                yaw_rate=manual_yaw_rate,
-                                duration=0.1
-                            )
+                        # Apply manual controls in body frame with altitude lock
+                        # Even if no keys are pressed, we call it to maintain Z-lock (or we can hover)
+                        controller.move_by_velocity_z_body_frame(
+                            forward=manual_pitch,
+                            right=manual_roll,
+                            z=target_altitude,
+                            yaw_rate=manual_yaw_rate,
+                            duration=0.1
+                        )
                         
-                        # Decay controls gradually when no key is pressed
-                        manual_pitch *= 0.9
-                        manual_roll *= 0.9
-                        manual_yaw_rate *= 0.9
-                        manual_throttle *= 0.9
+                        # Decay controls gradually for stability (using config smoothing)
+                        manual_pitch *= config.MANUAL_CONTROL_SMOOTHING
+                        manual_roll *= config.MANUAL_CONTROL_SMOOTHING
+                        manual_yaw_rate *= config.MANUAL_CONTROL_SMOOTHING
+                        
+                        # Apply deadzones to stop completely
+                        if abs(manual_pitch) < 0.05: manual_pitch = 0.0
+                        if abs(manual_roll) < 0.05: manual_roll = 0.0
+                        if abs(manual_yaw_rate) < 0.5: manual_yaw_rate = 0.0
+                        
                     except Exception as e:
                         logger.warning(f"Failed to send manual control: {e}")
                 
